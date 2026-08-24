@@ -19,14 +19,26 @@ export function initVoiceButton(container) {
 
     if (voiceRecognition && !voiceRecognition.isSupported) {
         btn.classList.add('disabled');
-        if (statusEl) statusEl.textContent = 'Voice not supported';
-        return;
+        if (statusEl) statusEl.textContent = 'Voice not supported — use Chrome or Edge';
     }
 
     btn.addEventListener('click', () => {
+        console.log('[VoiceButton] clicked | supported =', voiceRecognition?.isSupported,
+            '| listening =', voiceRecognition?.isListening,
+            '| browser =', navigator.userAgent);
+
+        if (!voiceRecognition || !voiceRecognition.isSupported) {
+            eventBus.emit('toast:show', {
+                message: '⚠️ Voice recognition is not supported in this browser. Please open this site in Google Chrome or Microsoft Edge.',
+                type: 'error'
+            });
+            return;
+        }
+
         if (voiceRecognition.isListening) {
             voiceRecognition.stop();
         } else {
+            if (statusEl) statusEl.textContent = 'Starting microphone...';
             voiceRecognition.start();
         }
     });
@@ -39,5 +51,9 @@ export function initVoiceButton(container) {
     eventBus.on('voice:end', () => {
         btn.classList.remove('listening');
         if (statusEl) statusEl.textContent = 'Tap to speak';
+    });
+
+    eventBus.on('voice:status', (text) => {
+        if (statusEl) statusEl.textContent = text;
     });
 }

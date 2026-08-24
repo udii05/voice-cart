@@ -111,6 +111,7 @@ export class VoiceRecognition {
       if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
         this.isListening = false;
         eventBus.emit('voice:end');
+        eventBus.emit('voice:status', 'Microphone blocked — allow mic access');
         eventBus.emit('toast:show', {
           message: '🎤 Microphone permission denied. Allow mic access in the address bar.',
           type: 'error'
@@ -118,6 +119,7 @@ export class VoiceRecognition {
       } else if (event.error === 'audio-capture') {
         this.isListening = false;
         eventBus.emit('voice:end');
+        eventBus.emit('voice:status', 'No microphone found');
         eventBus.emit('toast:show', {
           message: '🎤 No microphone found. Connect an audio input device.',
           type: 'error'
@@ -140,6 +142,7 @@ export class VoiceRecognition {
       } else if (event.error === 'aborted') {
         // Intentional stop, do nothing
       } else if (event.error === 'network') {
+        eventBus.emit('voice:status', 'Speech service unreachable');
         eventBus.emit('toast:show', {
           message: '🌐 Speech recognition network error. Check your internet connection.',
           type: 'error'
@@ -296,6 +299,7 @@ export class VoiceRecognition {
       if (!this.recognition) {
         this._createRecognition();
       }
+      eventBus.emit('voice:status', 'Starting microphone...');
       this.recognition.start();
     } catch (e) {
       console.warn('[VoiceRecognition] start error:', e);
