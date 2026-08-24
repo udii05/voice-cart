@@ -1,0 +1,42 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Default: deny everything not explicitly allowed below ──
+
+    // User profile documents: users/{uid}
+    // The app reads and upserts the signed-in user's own profile only.
+    match /users/{userId} {
+      allow read: if isSignedIn() && isOwner(userId);
+
+      allow create, update: if isSignedIn()
+                            && isOwner(userId)
+                            && isValidUserProfile();
+
+      // The app never deletes profiles; keep this locked.
+      allow delete: if false;
+    }
+
+    // ── Helpers ────────────────────────────────────────────────
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return request.auth.uid == userId;
+    }
+
+    function isValidUserProfile() {
+      let data = request.resource.data;
+      // Only known fields may be written, and uid must match the caller.
+      return data.keys().hasOnly([
+               'uid', 'email', 'displayName', 'photoURL',
+               'provider', 'lastLoginAt', 'createdAt'
+             ])
+             && data.keys().hasAll(['uid'])
+             && data.uid == request.auth.uid;
+    }
+  }
+}
