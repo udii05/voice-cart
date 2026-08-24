@@ -10,13 +10,15 @@ export class VoiceRecognition {
     this.language = 'en-US';
     this.silenceTimer = null;
     this.watchdogTimer = null;
+    this.startGuardTimer = null;
     this.currentTranscript = '';
     this.lastProcessedTranscript = '';
     this.lastResultAt = 0;
     this.noSpeechStreak = 0;
+    this.silentEndStreak = 0; // sessions that ended with zero activity
+    this.hadActivity = false; // any result/no-speech seen this session
     this.silenceDelayMs = 1500; // 1.5s silence auto-finalizes
     this.watchdogMs = 8000; // restart engine if deaf for 8s
-    this.micSettleMs = 200; // let the audio device settle before recognition
 
     if (this.isSupported) {
       this._createRecognition();
@@ -37,9 +39,11 @@ export class VoiceRecognition {
       console.log('[VoiceRecognition] ✅ Recognition started');
       this.isListening = true;
       this.isStarting = false;
+      this.hadActivity = false;
       this.currentTranscript = '';
       this.lastProcessedTranscript = '';
       this.lastResultAt = Date.now();
+      clearTimeout(this.startGuardTimer);
       eventBus.emit('voice:start');
       this._armWatchdog();
     };
@@ -66,6 +70,8 @@ export class VoiceRecognition {
       // Engine is hearing — reset diagnostics
       this.lastResultAt = Date.now();
       this.noSpeechStreak = 0;
+      this.silentEndStreak = 0;
+      this.hadActivity = true;
       this._armWatchdog();
 
       // Emit interim result for live transcription display
@@ -97,10 +103,13 @@ export class VoiceRecognition {
     this.recognition.onerror = (event) => {
       console.warn('[VoiceRecognition] error:', event.error);
       clearTimeout(this.silenceTimer);
+      clearTimeout(this.startGuardTimer);
+      // Never leave the start flag latched — that would permanently
+      // deadlock the mic button (every later start() would bail out).
+      this.isStarting = false;
 
       if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
         this.isListening = false;
-        this.isStarting = false;
         eventBus.emit('voice:end');
         eventBus.emit('toast:show', {
           message: '🎤 Microphone permission denied. Allow mic access in the address bar.',
@@ -108,13 +117,16 @@ export class VoiceRecognition {
         });
       } else if (event.error === 'audio-capture') {
         this.isListening = false;
-        this.isStarting = false;
         eventBus.emit('voice:end');
         eventBus.emit('toast:show', {
           message: '🎤 No microphone found. Connect an audio input device.',
           type: 'error'
         });
       } else if (event.error === 'no-speech') {
+        // Engine IS alive, it just heard nothing — counts as activity so
+        // the silent-restart cap doesn't trip on normal quiet pauses.
+        this.hadActivity = true;
+        this.silentEndStreak = 0;
         // User hasn't spoken yet — not a real error, just restart listening.
         // After a couple of silent cycles, let the user know nothing is coming in.
         this.noSpeechStreak += 1;
@@ -132,6 +144,14 @@ export class VoiceRecognition {
           message: '🌐 Speech recognition network error. Check your internet connection.',
           type: 'error'
         });
+        // The engine instance may now be in a bad state — rebuild it so the
+        // next attempt starts clean instead of reusing a broken session.
+        this.isListening = false;
+        eventBus.emit('voice:end');
+        this._createRecognition();
+      } else {
+        // Unknown error — rebuild the engine so the next tap starts clean.
+        this._createRecognition();
       }
     };
 
@@ -139,14 +159,37 @@ export class VoiceRecognition {
       console.log('[VoiceRecognition] onend fired. isListening =', this.isListening);
       clearTimeout(this.silenceTimer);
       clearTimeout(this.watchdogTimer);
+      clearTimeout(this.startGuardTimer);
+      this.isStarting = false;
 
       // If there was uncommitted speech, finalize it
       if (this.currentTranscript && this.currentTranscript !== this.lastProcessedTranscript) {
         this._finalizeCommand(this.currentTranscript, 0.88);
       }
 
+      // Track sessions that produced absolutely nothing (no results, no
+      // no-speech event). Repeated silent sessions mean the engine cannot
+      // access the audio device — restart a few times, then give up with
+      // a clear message instead of looping forever.
+      if (this.hadActivity) {
+        this.silentEndStreak = 0;
+      } else if (this.isListening) {
+        this.silentEndStreak += 1;
+        console.warn('[VoiceRecognition] silent session ended, streak =', this.silentEndStreak);
+      }
+
       // Auto-restart if we're supposed to keep listening
       if (this.isListening) {
+        if (this.silentEndStreak >= 3) {
+          this.isListening = false;
+          this.silentEndStreak = 0;
+          eventBus.emit('voice:end');
+          eventBus.emit('toast:show', {
+            message: '🎤 Microphone started but no audio is reaching the app. Check Windows mic privacy settings (Settings → Privacy → Microphone → allow desktop apps) and your default input device.',
+            type: 'error'
+          });
+          return;
+        }
         setTimeout(() => {
           if (this.isListening) {
             try {
@@ -201,7 +244,7 @@ export class VoiceRecognition {
     });
   }
 
-  async start() {
+  start() {
     if (!this.isSupported) {
       eventBus.emit('toast:show', {
         message: '⚠️ Voice recognition is not supported. Use Chrome or Edge.',
@@ -222,31 +265,32 @@ export class VoiceRecognition {
     }
 
     this.isStarting = true;
-
-    // Request microphone permission first
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      // Release the permission stream
-      stream.getTracks().forEach(t => t.stop());
-      // Give the audio device time to fully release BEFORE the recognizer
-      // re-acquires it — starting immediately can leave recognition deaf.
-      await new Promise(r => setTimeout(r, this.micSettleMs));
-    } catch (err) {
-      console.warn('[VoiceRecognition] Mic permission error:', err);
-      this.isStarting = false;
-      eventBus.emit('toast:show', {
-        message: '🎤 Please allow microphone access to use voice commands.',
-        type: 'error'
-      });
-      return;
-    }
-
-    // User may have toggled stop() while we were awaiting permission
-    if (!this.isStarting) return;
-
     this.currentTranscript = '';
     this.lastProcessedTranscript = '';
     this.noSpeechStreak = 0;
+    this.silentEndStreak = 0;
+
+    // IMPORTANT: do NOT pre-acquire the mic with getUserMedia here.
+    // Stopping a permission stream right before recognition.start() is a
+    // known Chrome race (especially on Windows) that leaves the session
+    // completely deaf — no results, no errors. Letting the recognizer
+    // acquire the device directly avoids the race; the browser shows its
+    // own permission prompt and denials surface via onerror('not-allowed').
+
+    // Safety net: if the engine never fires onstart, don't leave the
+    // button latched in "starting" state forever.
+    clearTimeout(this.startGuardTimer);
+    this.startGuardTimer = setTimeout(() => {
+      if (this.isStarting && !this.isListening) {
+        console.warn('[VoiceRecognition] start guard: onstart never fired — resetting');
+        this.isStarting = false;
+        eventBus.emit('voice:end');
+        eventBus.emit('toast:show', {
+          message: '🎤 Microphone did not start. Click the mic button and try again.',
+          type: 'error'
+        });
+      }
+    }, 6000);
 
     try {
       if (!this.recognition) {
@@ -255,6 +299,7 @@ export class VoiceRecognition {
       this.recognition.start();
     } catch (e) {
       console.warn('[VoiceRecognition] start error:', e);
+      clearTimeout(this.startGuardTimer);
       if (e.name === 'InvalidStateError') {
         // Already running — recreate
         this._createRecognition();
@@ -272,6 +317,7 @@ export class VoiceRecognition {
     this.isStarting = false;
     clearTimeout(this.silenceTimer);
     clearTimeout(this.watchdogTimer);
+    clearTimeout(this.startGuardTimer);
 
     // Finalize pending speech before stopping
     if (this.currentTranscript && this.currentTranscript !== this.lastProcessedTranscript) {
