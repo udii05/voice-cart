@@ -1,5 +1,7 @@
 # VoiceCart - AI Shopping Platform with Voice
 
+**Live Demo:** [https://voice-cart-11bca.web.app](https://voice-cart-11bca.web.app) — deployed on Firebase Hosting
+
 **A production-grade, voice-first grocery shopping platform.**
 
 VoiceCart lets users build and manage a shopping cart entirely by voice. Spoken commands are captured with the Web Speech API, parsed by a lightweight natural-language pipeline, and executed against a 200+ item product catalog — with spoken confirmation, live transcription, authentication, and a full checkout flow.
