@@ -1,4 +1,4 @@
-# VoiceCart
+# VoiceCart - AI Shopping Platform with Voice
 
 **A production-grade, voice-first grocery shopping platform.**
 
